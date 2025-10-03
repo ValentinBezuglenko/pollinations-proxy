@@ -1,27 +1,53 @@
-bool sendPart(String part, String &response) {
-  WiFiClientSecure client;
-  client.setInsecure(); // отключаем проверку сертификата
-  // client.setBufferSizes(1024, 1024); // <- убрали, потому что нет в вашей версии
+const express = require('express');
+const axios = require('axios');
+const bodyParser = require('body-parser');
 
-  HTTPClient https;
+const app = express();
+const port = process.env.PORT || 3000;
 
-  if (https.begin(client, proxyURL)) {
-    https.addHeader("Content-Type", "text/plain; charset=utf-8");
-    int httpCode = https.POST(part);
+// Временное хранилище для частей сообщений по сессиям
+let sessions = {};
 
-    if (httpCode > 0) {
-      response = https.getString();
-      https.end();
-      return true;
-    } else {
-      Serial.print("Ошибка HTTP запроса: ");
-      Serial.println(httpCode);
-    }
+// Парсинг тела POST
+app.use(bodyParser.text({ type: '*/*' }));
 
-    https.end();
-  } else {
-    Serial.println("Ошибка подключения к серверу");
+// Endpoint для ESP32
+app.post('/ask', async (req, res) => {
+  const sessionId = req.headers['esp-session-id'] || 'default';
+  const part = req.body;
+
+  if (!sessions[sessionId]) {
+    sessions[sessionId] = '';
   }
 
-  return false;
-}
+  // Собираем части
+  sessions[sessionId] += part;
+
+  // Проверим, пришла ли "конец сообщения" (можно договориться с ESP32)
+  const endMarker = '[END]';
+  if (sessions[sessionId].endsWith(endMarker)) {
+    const fullMessage = sessions[sessionId].slice(0, -endMarker.length);
+    sessions[sessionId] = ''; // очистим для новой сессии
+
+    try {
+      // Отправляем на AI (Pollinations или OpenAI)
+      const aiResponse = await axios.post(
+        'https://text.pollinations.ai/' + encodeURIComponent(fullMessage),
+        {},
+        { timeout: 10000 } // таймаут 10 сек
+      );
+
+      res.send(aiResponse.data); // возвращаем полный ответ ESP32
+    } catch (err) {
+      console.error(err.message);
+      res.status(500).send('Ошибка при обращении к AI');
+    }
+  } else {
+    // Пока ждём остальные части, подтверждаем получение
+    res.send('OK');
+  }
+});
+
+app.listen(port, () => {
+  console.log(`Server running on port ${port}`);
+});
